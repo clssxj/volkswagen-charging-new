@@ -1,0 +1,62 @@
+/**
+ * 全局 z-index 规划
+ * 统一管理所有组件的层级，避免遮挡
+ */
+
+:root {
+  /* 地图相关 */
+  --z-map: 1;
+  --z-map-markers: 10;
+  --z-map-controls: 100;
+  
+  /* UI组件 */
+  --z-search-bar: 200;
+  --z-floating-buttons: 200;
+  
+  /* 弹出层 */
+  --z-drawer: 300;
+  --z-modal-overlay: 400;
+  --z-modal-content: 410;
+  
+  /* Toast提示 */
+  --z-toast: 500;
+}
+
+/* 应用到具体元素 */
+.map-layer {
+  z-index: var(--z-map);
+}
+
+.marker-layer {
+  z-index: var(--z-map-markers);
+}
+
+.control-layer {
+  z-index: var(--z-map-controls);
+}
+
+.ui-layer {
+  z-index: var(--z-search-bar);
+}
+
+.drawer-layer {
+  z-index: var(--z-drawer);
+}
+
+.modal-layer {
+  z-index: var(--z-modal-overlay);
+}
+
+.toast-layer {
+  z-index: var(--z-toast);
+}
+
+
+
+
+
+
+
+
+
+

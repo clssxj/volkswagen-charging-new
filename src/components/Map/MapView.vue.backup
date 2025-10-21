@@ -1,0 +1,541 @@
+<template>
+  <div class="map-container">
+    <div ref="mapContainer" class="amap-container"></div>
+    
+    <!-- 加载提示 -->
+    <div v-if="isInitializing" class="absolute inset-0 bg-white dark:bg-gray-900 flex items-center justify-center z-10">
+      <div class="text-center">
+        <div class="loading-spinner mx-auto mb-4"></div>
+        <p class="text-gray-600 dark:text-gray-400">正在加载地图...</p>
+      </div>
+    </div>
+    
+    <!-- 地图控件 -->
+    <div class="absolute right-4 space-y-2 safe-area-top" style="top: 70px; z-index: 100;">
+      <!-- 定位按钮 -->
+      <button 
+        @click="handleLocate" 
+        :disabled="isLocating"
+        class="map-control w-12 h-12 flex items-center justify-center"
+        title="定位到当前位置"
+      >
+        <svg v-if="!isLocating" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+        <div v-else class="loading-spinner" style="width: 20px; height: 20px;"></div>
+      </button>
+      
+      <!-- 主题切换 -->
+      <button 
+        @click="mapStore.toggleTheme()" 
+        class="map-control w-12 h-12 flex items-center justify-center"
+        title="切换主题"
+      >
+        <svg v-if="!mapStore.isDarkMode" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+        </svg>
+        <svg v-else class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+        </svg>
+      </button>
+      
+      <!-- 图层切换（可选） -->
+      <button 
+        @click="toggleTraffic" 
+        class="map-control w-12 h-12 flex items-center justify-center"
+        :class="{ 'bg-primary-100': showTraffic }"
+        title="路况图层"
+      >
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
+        </svg>
+      </button>
+    </div>
+    
+    <!-- 缩放控件 -->
+    <div class="absolute right-4 space-y-1 safe-area-bottom" style="bottom: 140px; z-index: 100;">
+      <button 
+        @click="handleZoomIn" 
+        class="map-control w-12 h-12 flex items-center justify-center text-xl font-bold"
+        title="放大"
+      >
+        +
+      </button>
+      <button 
+        @click="handleZoomOut" 
+        class="map-control w-12 h-12 flex items-center justify-center text-xl font-bold"
+        title="缩小"
+      >
+        −
+      </button>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { useMapStore } from '@/stores/map'
+import { useStationStore } from '@/stores/station'
+import { loadAMap, createMap, generateStationMarkerIcon, generateClusterMarkerIcon, calculateAvailableRatio, getCurrentPosition, getAccuratePosition } from '@/utils/map'
+import type { StationListItem } from '@/types'
+
+const emit = defineEmits<{
+  (e: 'station-click', station: StationListItem): void
+  (e: 'map-ready'): void
+}>()
+
+const mapStore = useMapStore()
+const stationStore = useStationStore()
+
+const mapContainer = ref<HTMLElement>()
+const isInitializing = ref(true)
+const isLocating = ref(false)
+const showTraffic = ref(false)
+
+let map: any = null
+let markerCluster: any = null
+let markers: Map<string, any> = new Map()
+let trafficLayer: any = null
+let currentLocationMarker: any = null
+
+/**
+ * 初始化地图
+ */
+async function initMap() {
+  try {
+    isInitializing.value = true
+    
+    // 加载高德地图
+    const AMap = await loadAMap()
+    
+    // 创建地图实例
+    map = createMap(mapContainer.value!, {
+      mapStyle: mapStore.isDarkMode ? 'amap://styles/dark' : 'amap://styles/normal',
+    })
+    
+    mapStore.setMapInstance(map)
+    
+    // 添加地图事件监听
+    map.on('moveend', handleMapMoveEnd)
+    map.on('zoomend', handleMapZoomEnd)
+    
+    // 尝试定位（粗略定位加快速度）
+    handleInitialLocation()
+    
+    // 初始化路况图层
+    trafficLayer = new AMap.TileLayer.Traffic({
+      zIndex: 10,
+      visible: false,
+    })
+    map.add(trafficLayer)
+    
+    // 初始化标记聚合
+    initMarkerCluster(AMap)
+    
+    // 添加测试标记（验证标记显示功能）
+    addTestMarker(AMap)
+    
+    isInitializing.value = false
+    emit('map-ready')
+    
+    // 延迟加载初始数据，避免和地图初始化冲突
+    setTimeout(() => {
+      updateMapBounds()
+      updateVisibleStations()
+    }, 500)
+    
+  } catch (error) {
+    console.error('地图初始化失败:', error)
+    isInitializing.value = false
+  }
+}
+
+/**
+ * 添加测试标记（用于验证）- 暂时注释掉
+ */
+function addTestMarker(AMap: any) {
+  // 测试标记已验证通过，不再需要
+  console.log('✅ 标记显示功能正常，跳过测试标记')
+}
+
+/**
+ * 初始定位
+ */
+async function handleInitialLocation() {
+  try {
+    mapStore.setLocating(true)
+    
+    // 先快速粗略定位
+    const position = await getCurrentPosition()
+    const { latitude, longitude } = position.coords
+    
+    mapStore.setCurrentLocation({ lat: latitude, lng: longitude })
+    
+    // 设置地图中心并缩放到合适级别
+    if (map) {
+      map.setZoomAndCenter(14, [longitude, latitude], false)
+      console.log(`✅ 定位成功，已放大到级别14: (${latitude}, ${longitude})`)
+    }
+    
+    // 添加当前位置标记
+    updateCurrentLocationMarker(latitude, longitude)
+    
+    // 后台进行精确定位
+    getAccuratePosition().then(accuratePos => {
+      const { latitude: lat, longitude: lng } = accuratePos.coords
+      mapStore.setCurrentLocation({ lat, lng })
+      updateCurrentLocationMarker(lat, lng)
+      
+      // 精确定位后微调中心点（不改变缩放级别）
+      if (map) {
+        map.setCenter([lng, lat])
+        console.log(`✅ 精确定位完成: (${lat}, ${lng})`)
+      }
+    }).catch(err => {
+      console.warn('精确定位失败:', err)
+    })
+    
+  } catch (error: any) {
+    console.warn('定位失败，使用默认位置（合肥）:', error)
+    mapStore.setLocationError(error.message || '定位失败')
+    
+    // 定位失败，仍然设置默认缩放级别
+    if (map) {
+      map.setZoom(12)
+    }
+  } finally {
+    mapStore.setLocating(false)
+  }
+}
+
+/**
+ * 更新当前位置标记
+ */
+function updateCurrentLocationMarker(lat: number, lng: number) {
+  if (!map) return
+  
+  const AMap = (window as any).AMap
+  
+  if (currentLocationMarker) {
+    currentLocationMarker.setPosition([lng, lat])
+  } else {
+    currentLocationMarker = new AMap.Marker({
+      position: [lng, lat],
+      icon: new AMap.Icon({
+        size: new AMap.Size(40, 40),
+        image: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(`
+          <svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="20" cy="20" r="18" fill="#0ea5e9" opacity="0.2"/>
+            <circle cx="20" cy="20" r="12" fill="#0ea5e9" opacity="0.4"/>
+            <circle cx="20" cy="20" r="6" fill="#0ea5e9"/>
+            <circle cx="20" cy="20" r="3" fill="white"/>
+          </svg>
+        `),
+        imageSize: new AMap.Size(40, 40),
+      }),
+      offset: new AMap.Pixel(-20, -20),
+      zIndex: 200,
+    })
+    map.add(currentLocationMarker)
+  }
+}
+
+/**
+ * 初始化标记聚合
+ */
+function initMarkerCluster(AMap: any) {
+  // 获取所有充电站数量用于计算因子
+  const totalCount = 2000
+  
+  markerCluster = new AMap.MarkerCluster(map, [], {
+    gridSize: 80,
+    minClusterSize: 2,
+    maxZoom: 16,
+    averageCenter: true,
+    zoomOnClick: true,
+    renderClusterMarker: (context: any) => {
+      const count = context.count
+      const marker = context.marker
+      
+      console.log(`渲染聚合标记，数量: ${count}`)
+      
+      // 使用官方推荐的setContent方式
+      const factor = Math.pow(count / totalCount, 1 / 18)
+      const div = document.createElement('div')
+      
+      // 计算颜色（蓝色系）
+      const Hue = 200 - factor * 50  // 蓝色到青色
+      const bgColor = mapStore.isDarkMode ? `hsla(${Hue}, 80%, 40%, 0.9)` : `hsla(${Hue}, 100%, 95%, 0.95)`
+      const fontColor = mapStore.isDarkMode ? '#ffffff' : `hsla(${Hue}, 100%, 40%, 1)`
+      const borderColor = `hsla(${Hue}, 100%, 50%, 1)`
+      const shadowColor = `hsla(${Hue}, 100%, 10%, 0.3)`
+      
+      // 计算大小
+      const size = Math.round(40 + Math.pow(count / totalCount, 1 / 5) * 30)
+      
+      // 设置样式
+      div.style.backgroundColor = bgColor
+      div.style.width = div.style.height = size + 'px'
+      div.style.border = `solid 3px ${borderColor}`
+      div.style.borderRadius = size / 2 + 'px'
+      div.style.boxShadow = `0 2px 8px ${shadowColor}`
+      div.style.lineHeight = size + 'px'
+      div.style.color = fontColor
+      div.style.fontSize = Math.max(14, Math.min(24, size / 2)) + 'px'
+      div.style.fontWeight = 'bold'
+      div.style.textAlign = 'center'
+      div.style.cursor = 'pointer'
+      div.innerHTML = count
+      
+      // 设置偏移使中心对准坐标
+      marker.setOffset(new AMap.Pixel(-size / 2, -size / 2))
+      marker.setContent(div)
+      marker.setzIndex(150)
+    },
+  })
+  console.log('✅ MarkerCluster 初始化完成', markerCluster)
+}
+
+/**
+ * 地图移动结束
+ */
+function handleMapMoveEnd() {
+  updateMapBounds()
+  updateVisibleStations()
+}
+
+/**
+ * 地图缩放结束
+ */
+function handleMapZoomEnd() {
+  const zoom = map.getZoom()
+  mapStore.setMapZoom(zoom)
+  updateMapBounds()
+  updateVisibleStations()
+}
+
+/**
+ * 更新地图边界
+ */
+function updateMapBounds() {
+  if (!map) return
+  
+  const bounds = map.getBounds()
+  const ne = bounds.getNorthEast()
+  const sw = bounds.getSouthWest()
+  
+  const mapBounds = {
+    northeast: { lat: ne.lat, lng: ne.lng },
+    southwest: { lat: sw.lat, lng: sw.lng },
+  }
+  
+  console.log('地图边界更新:', mapBounds)
+  mapStore.setMapBounds(mapBounds)
+}
+
+/**
+ * 更新可见充电站
+ */
+async function updateVisibleStations() {
+  await mapStore.updateVisibleStations()
+  updateMarkers()
+}
+
+/**
+ * 更新标记
+ */
+function updateMarkers() {
+  if (!map) {
+    console.warn('地图未初始化')
+    return
+  }
+  
+  const AMap = (window as any).AMap
+  const stations = mapStore.visibleStations
+  
+  console.log(`开始渲染 ${stations.length} 个充电站标记`)
+  
+  // 清除旧标记
+  markers.forEach(marker => {
+    map.remove(marker)
+  })
+  markers.clear()
+  
+  // 如果没有充电站，直接返回
+  if (stations.length === 0) {
+    console.warn('⚠️ 没有充电站需要渲染')
+    if (markerCluster) markerCluster.setData([])
+    return
+  }
+  
+  // 创建新标记
+  const newMarkers = stations.map(station => {
+    const ratio = calculateAvailableRatio(station)
+    const available = station.quickAvailableNum + station.slowAvailableNum
+    const total = station.quickChargeNum + station.slowChargeNum
+    const icon = generateStationMarkerIcon(
+      ratio, 
+      station.totalCostPrice, 
+      available,
+      total,
+      mapStore.isDarkMode
+    )
+    
+    const marker = new AMap.Marker({
+      position: [station.lng, station.lat],
+      icon: new AMap.Icon({
+        size: new AMap.Size(90, 100),
+        image: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(icon),
+        imageSize: new AMap.Size(90, 100),
+      }),
+      offset: new AMap.Pixel(-45, -70),
+      extData: station,
+      zIndex: 100,
+      clickable: true,
+    })
+    
+    // 点击事件
+    marker.on('click', () => {
+      handleMarkerClick(station)
+    })
+    
+    markers.set(station.stationId, marker)
+    return marker
+  })
+  
+  console.log(`✅ 创建了 ${newMarkers.length} 个标记对象`)
+  
+  // 决定使用聚合还是直接添加
+  const currentZoom = map.getZoom()
+  const useCluster = newMarkers.length > 15 && currentZoom < 15
+  
+  if (useCluster && markerCluster) {
+    // 使用聚合模式
+    markerCluster.setData(newMarkers)
+    console.log(`✅ 使用聚合模式，已添加 ${newMarkers.length} 个标记 (缩放级别: ${currentZoom})`)
+  } else {
+    // 直接添加到地图（不使用聚合）
+    newMarkers.forEach(marker => {
+      map.add(marker)
+    })
+    console.log(`✅ 直接添加模式，已添加 ${newMarkers.length} 个标记到地图 (缩放级别: ${currentZoom})`)
+    
+    // 清空聚合器
+    if (markerCluster) markerCluster.setData([])
+  }
+}
+
+/**
+ * 标记点击事件
+ */
+function handleMarkerClick(station: StationListItem) {
+  mapStore.selectStation(station)
+  emit('station-click', station)
+}
+
+/**
+ * 定位按钮点击
+ */
+async function handleLocate() {
+  if (isLocating.value) return
+  
+  try {
+    isLocating.value = true
+    mapStore.setLocating(true)
+    
+    const position = await getCurrentPosition()
+    const { latitude, longitude } = position.coords
+    
+    mapStore.setCurrentLocation({ lat: latitude, lng: longitude })
+    mapStore.flyTo({ lat: latitude, lng: longitude }, 15)
+    
+    updateCurrentLocationMarker(latitude, longitude)
+    
+    // 后台精确定位
+    getAccuratePosition().then(accuratePos => {
+      const { latitude: lat, longitude: lng } = accuratePos.coords
+      mapStore.setCurrentLocation({ lat, lng })
+      updateCurrentLocationMarker(lat, lng)
+    }).catch(() => {})
+    
+  } catch (error: any) {
+    console.error('定位失败:', error)
+    alert('定位失败，请确保已授予位置权限')
+  } finally {
+    isLocating.value = false
+    mapStore.setLocating(false)
+  }
+}
+
+/**
+ * 放大
+ */
+function handleZoomIn() {
+  if (map) {
+    map.zoomIn()
+  }
+}
+
+/**
+ * 缩小
+ */
+function handleZoomOut() {
+  if (map) {
+    map.zoomOut()
+  }
+}
+
+/**
+ * 切换路况
+ */
+function toggleTraffic() {
+  showTraffic.value = !showTraffic.value
+  if (trafficLayer) {
+    trafficLayer.setVisible(showTraffic.value)
+  }
+}
+
+// 监听主题变化，更新标记
+watch(() => mapStore.isDarkMode, () => {
+  if (mapStore.visibleStations.length > 0) {
+    console.log('主题切换，重新渲染标记')
+    updateMarkers()
+  }
+})
+
+// 不需要监听visibleStations，因为updateVisibleStations已经会调用updateMarkers
+// watch(() => mapStore.visibleStations, () => {
+//   updateMarkers()
+// }, { deep: true })
+
+onMounted(() => {
+  initMap()
+})
+
+onUnmounted(() => {
+  if (map) {
+    map.destroy()
+  }
+})
+</script>
+
+<style scoped>
+.map-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+.amap-container {
+  position: relative;
+  z-index: 1;
+  cursor: grab;
+}
+
+.amap-container:active {
+  cursor: grabbing;
+}
+</style>
+
