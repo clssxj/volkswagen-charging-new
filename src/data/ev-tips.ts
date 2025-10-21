@@ -139,3 +139,4 @@ export function getRandomTipExcept(currentTip: string): string {
   return newTip
 }
 
+

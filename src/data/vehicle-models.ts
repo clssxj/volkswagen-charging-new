@@ -394,3 +394,4 @@ export function getRandomInitialSOC(): number {
   return 5 + Math.random() * 55
 }
 
+
